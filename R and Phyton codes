@@ -1,0 +1,920 @@
+Prepare environment, load data, and data preparation	!pip install scikit-survival
+#%% read the data and define the types
+end="OS" #end="OS" or "DFS"
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sksurv.linear_model import CoxPHSurvivalAnalysis, CoxnetSurvivalAnalysis
+from sksurv.preprocessing import OneHotEncoder
+from sklearn.model_selection import GridSearchCV, KFold
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+import copy
+from pandas.api.types import CategoricalDtype
+
+df=pd.read_csv('stroke_data.csv')
+df
+
+# Define type of features for categorical data
+
+df["ss"]=df["ss"].astype("category")
+df["sex"]=df["sex"].astype("category")
+df["ethnicity"]=df["ethnicity"].astype("category")
+df["married"]=df["married"].astype("category")
+df["dm"]=df["dm"].astype("category")
+df["hpt"]=df["hpt"].astype("category")
+df["ckd"]=df["ckd"].astype("category")
+df["af"]=df["af"].astype("category")
+df["hf_ihd"]=df["hf_ihd"].astype("category")
+df["lipid"]=df["lipid"].astype("category")
+df["smoke"]=df["smoke"].astype("category")
+df["who"]=df["who"].astype("category")
+df["nihss"]=df["nihss"].astype("category")
+df["iv_thrombolysis"]=df["iv_thrombolysis"].astype("category")
+df["iv_thrombectomy"]=df["iv_thrombectomy"].astype("category")
+df["status"]=df["status"].astype("category")
+
+print(df.dtypes)
+# Split training set and test set
+from sksurv.datasets import get_x_y
+from sklearn.model_selection import train_test_split
+X, y = get_x_y(df,attr_labels=['status', 'dur_month'], pos_label=1)
+X0=X
+y0=y
+X, Xtest, y, ytest = train_test_split(X, y, test_size=0.3, random_state=1)
+Xt=X
+Xttest=Xtest
+X
+
+# We use R to compare C-index of different models and generate ROC curves, so we output the predict score
+def outroc(ytest,preds,name):
+    rocdata= pd.DataFrame() 
+    rocdata['os']=ytest['status']
+    rocdata['time']=ytest['dur_month']
+    rocdata['marker']=preds
+    rocdata=rocdata.replace(True,1)
+    rocdata=rocdata.replace(False,0)
+    path=r"rocdata"+name+".csv"
+    rocdata.to_csv(path,index=False,header=True)
+Cox Proportional Hazard 	!pip install lifelines
+#%% COX
+import warnings
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+
+cph2 = CoxPHSurvivalAnalysis()
+
+#Variables with P > 0.05 in multivariate Cox regression were excluded
+from lifelines import KaplanMeierFitter
+kmf = KaplanMeierFitter()
+from lifelines.utils import median_survival_times
+from lifelines import CoxPHFitter
+
+cph3 = CoxPHFitter(penalizer = 0.1)
+cph3.fit(df, 'dur_month', 'status')
+cph3.print_summary(columns=["coef", "se(coef)", "p"], decimals=3)
+cph3r=cph3.summary
+cph3rvar=cph3r[cph3r["p"]>0.05].index #cph3rvar is a list of index of the variables with a P>0.05
+
+cph2.fit(X, y)
+
+ytestlist=ytest.tolist()
+ytestlist=[i[1] for i in ytestlist]
+va_times = np.arange(min(ytestlist), max(ytestlist), 2)
+
+# estimate performance on training data, thus use `va_y` twice.
+from sksurv.metrics import (concordance_index_censored,
+                            concordance_index_ipcw,
+                            cumulative_dynamic_auc,
+                            brier_score)
+
+va_auc0, va_mean_auc0 = cumulative_dynamic_auc(y, ytest, cph2.predict(Xtest), va_times)
+outroc(ytest, cph2.predict(Xtest),"cox2")
+
+#obtain the fig of time-dependent AUC at different time- 3m, 12m, 36m
+plt.figure()
+plt.plot(va_times, va_auc0, marker="o",markersize=3.,label ='cox2')
+plt.axhline(va_mean_auc0, linestyle="--")
+plt.xlabel("months from enrollment")
+plt.ylabel("time-dependent AUC")
+plt.legend()
+plt.grid(True)
+
+cindex = concordance_index_censored(ytest["status"], ytest["dur_month"], cph2.predict(Xtest))
+print(cindex)
+cox2cindex=cindex
+
+est2=cph2.fit(X, y)
+survs = est2.predict_survival_function(Xtest)
+
+preds = [fn(3) for fn in survs]
+times, cox2score3m = brier_score(y, ytest, preds, 3)
+preds = [fn(12) for fn in survs]
+times, cox2score1y = brier_score(y, ytest, preds, 12)
+preds = [fn(36) for fn in survs]
+times, cox2score3y = brier_score(y, ytest, preds, 36)
+# Adjust figure layout
+plt.tight_layout()
+
+# Save the figure as an image file
+plt.savefig("cox_auc3m12m36m.jpg", dpi=300, bbox_inches="tight")
+
+# Calculate Brier score for 3 months
+preds = [fn(3) for fn in survs]
+times, cox2score3m = brier_score(y, ytest, preds, 3)
+print("Brier Score for 3 months:", cox2score3m)
+
+# Calculate Brier score for 1 year
+preds = [fn(12) for fn in survs]
+times, cox2score1y = brier_score(y, ytest, preds, 12)
+print("Brier Score for 1 year:", cox2score1y)
+
+# Calculate Brier score for 3 years
+preds = [fn(36) for fn in survs]
+times, cox2score3y = brier_score(y, ytest, preds, 36)
+print("Brier Score for 3 years:", cox2score3y)
+
+# Calculate Brier score for 3 months
+preds = [fn(3) for fn in survs]
+times, cox2score3m = brier_score(y, ytest, preds, 3)
+print("Brier Score for 3 months:", cox2score3m)
+
+# Calculate Brier score for 1 year
+preds = [fn(12) for fn in survs]
+times, cox2score1y = brier_score(y, ytest, preds, 12)
+print("Brier Score for 1 year:", cox2score1y)
+
+# Calculate Brier score for 3 years
+preds = [fn(36) for fn in survs]
+times, cox2score3y = brier_score(y, ytest, preds, 36)
+print("Brier Score for 3 years:", cox2score3y)
+Cox-EN	#%% COX-EN
+
+#how the coefficients change for varying α
+alphas = 10. ** np.linspace(-4, 4, 30)
+coefficients = {}
+
+cph = CoxPHSurvivalAnalysis()
+
+for alpha in alphas:
+    cph.set_params(alpha=alpha)
+    cph.fit(X, y)
+    key = round(alpha, 5)
+    coefficients[key] = cph.coef_
+
+coefficients = (pd.DataFrame
+    .from_dict(coefficients)
+    .rename_axis(index="feature", columns="alpha")
+    .set_index(X.columns))
+
+def plot_coefficients(coefs, n_highlight):
+    _, ax = plt.subplots(figsize=(9, 6))
+    n_features = coefs.shape[0]
+    alphas = coefs.columns
+    for row in coefs.itertuples():
+        ax.semilogx(alphas, row[1:], ".-", label=row.Index)
+
+    alpha_min = alphas.min()
+    top_coefs = coefs.loc[:, alpha_min].map(abs).sort_values().tail(n_highlight)
+    for name in top_coefs.index:
+        coef = coefs.loc[name, alpha_min]
+        ax.text(
+            alpha_min, coef, str(name).replace('=1','') + "   ",
+            horizontalalignment="right",  # Adjusted to left
+            verticalalignment="center"
+        )
+    ax.yaxis.set_label_position("right")
+    ax.yaxis.tick_right()
+    ax.grid(True)
+    ax.set_xlabel("alpha")
+    ax.set_ylabel("coefficient")
+
+cox_elastic_net = CoxnetSurvivalAnalysis(l1_ratio=0.9, alpha_min_ratio=0.01)
+cox_elastic_net.fit(X, y)
+
+coefficients_elastic_net = pd.DataFrame(
+    cox_elastic_net.coef_,
+    index=X.columns,
+    columns=np.round(cox_elastic_net.alphas_, 5)
+)
+
+plot_coefficients(coefficients_elastic_net, n_highlight=7)
+
+# Adjust figure layout
+plt.tight_layout()
+
+# Save the figure as an image file
+plt.savefig("coxEN_varyingalpha.jpg", dpi=300, bbox_inches="tight")
+
+#  use cross-validation to determine which subset and α generalizes best
+import warnings
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+
+coxnet_pipe = make_pipeline(
+    StandardScaler(),
+    CoxnetSurvivalAnalysis(l1_ratio=0.9, alpha_min_ratio=0.01, max_iter=100)
+)
+warnings.simplefilter("ignore", ConvergenceWarning)
+coxnet_pipe.fit(Xt, y)
+cv = KFold(n_splits=5, shuffle=True, random_state=1)
+gcv = GridSearchCV(
+    make_pipeline(StandardScaler(), CoxnetSurvivalAnalysis(l1_ratio=0.9)),
+    param_grid={"coxnetsurvivalanalysis__alphas": [[v] for v in alphas]},
+    cv=cv,
+    error_score=0.5,
+    n_jobs=4).fit(X, y)
+cv_results = pd.DataFrame(gcv.cv_results_)
+alphas = cv_results.param_coxnetsurvivalanalysis__alphas.map(lambda x: x[0])
+mean = cv_results.mean_test_score
+std = cv_results.std_test_score
+fig, ax = plt.subplots(figsize=(9, 6))
+ax.plot(alphas, mean)
+ax.fill_between(alphas, mean - std, mean + std, alpha=.15)
+ax.set_xscale("log")
+ax.set_ylabel("concordance index")
+ax.set_xlabel("alpha")
+ax.axvline(gcv.best_params_["coxnetsurvivalanalysis__alphas"][0], c="C1")
+ax.axhline(0.5, color="grey", linestyle="--")
+ax.grid(True)
+
+# Adjust figure layout
+plt.tight_layout()
+
+# Save the figure as an image file
+plt.savefig("coxEN_subsetalpha.jpg", dpi=300, bbox_inches="tight")
+
+#feature importance
+best_model = gcv.best_estimator_.named_steps["coxnetsurvivalanalysis"]
+best_coefs = pd.DataFrame(
+    best_model.coef_,
+    index=X.columns,
+    columns=["coefficient"])
+non_zero = np.sum(best_coefs.iloc[:,0] != 0)
+print("Number of non-zero coefficients: {}".format(non_zero))
+non_zero_coefs = best_coefs.query("coefficient != 0")
+
+def strip_map(x):
+    return x.strip('=1')
+def tm(x):
+    if x=="ln_transfer":
+        return "ln_metastasis"
+    else:
+        return x
+non_zero_coefs.index=non_zero_coefs.index.map(strip_map)
+non_zero_coefs0=non_zero_coefs
+non_zero_coefs.index=non_zero_coefs.index.map(tm)
+coef_order = non_zero_coefs.abs().sort_values("coefficient").index
+_, ax = plt.subplots(figsize=(6, 8))
+non_zero_coefs.loc[coef_order].plot.barh(ax=ax, legend=False)
+ax.set_xlabel("coefficient")
+ax.grid(True)
+
+# Adjust figure layout
+plt.tight_layout()
+
+# Save the figure as an image file
+plt.savefig("coxEN_optimalalpha_featimportance.jpg", dpi=300, bbox_inches="tight")
+
+#fit the Cox-EN model
+
+cph.set_params(alpha=gcv.best_params_["coxnetsurvivalanalysis__alphas"][0])
+cph.fit(X, y)
+ytestlist=ytest.tolist()
+ytestlist=[i[1] for i in ytestlist]
+va_times = np.arange(min(ytestlist), max(ytestlist), 2)
+
+# estimate performance on training data, thus use `va_y` twice.
+from sksurv.metrics import (concordance_index_censored,
+                            concordance_index_ipcw,
+                            cumulative_dynamic_auc)
+
+va_auc, va_mean_auc = cumulative_dynamic_auc(y, ytest, cph.predict(Xtest), va_times)
+plt.figure()
+plt.plot(va_times, va_auc, marker="o",markersize=3.,label ='cox')
+plt.axhline(va_mean_auc, linestyle="--")
+plt.plot(va_times, va_auc0, marker="o",markersize=3.,label ='cox2')
+plt.axhline(va_mean_auc0, linestyle="--")
+plt.xlabel("months from enrollment")
+plt.ylabel("time-dependent AUC")
+plt.legend()
+plt.grid(True)
+cindex = concordance_index_censored(ytest["status"], ytest["dur_month"], cph.predict(Xtest))
+print(cindex)
+coxcindex=cindex
+from sksurv.datasets import load_gbsg2
+from sksurv.linear_model import CoxPHSurvivalAnalysis
+from sksurv.metrics import brier_score
+from sksurv.preprocessing import OneHotEncoder
+est=cph.fit(X, y)
+survs = est.predict_survival_function(Xtest)
+preds = [fn(3) for fn in survs]
+times, coxscore3m = brier_score(y, ytest, preds, 3)
+preds = [fn(12) for fn in survs]
+times, coxscore1y = brier_score(y, ytest, preds, 12)
+
+preds = [fn(36) for fn in survs]
+times, coxscore3y = brier_score(y, ytest, preds, 36)
+outroc(ytest,preds,"cox")
+
+# Adjust figure layout
+plt.tight_layout()
+
+# Save the figure as an image file
+plt.savefig("coxEN_performance.jpg", dpi=300, bbox_inches="tight")
+
+# Calculate Brier score for 3 months
+preds = [fn(3) for fn in survs]
+times, coxscore3m = brier_score(y, ytest, preds, 3)
+print("Brier Score for 3 months (Cox-EN):", coxscore3m)
+
+# Calculate Brier score for 1 year
+preds = [fn(12) for fn in survs]
+times, coxscore1y = brier_score(y, ytest, preds, 12)
+print("Brier Score for 1 year (Cox-EN):", coxscore1y)
+
+# Calculate Brier score for 3 years
+preds = [fn(36) for fn in survs]
+times, coxscore3y = brier_score(y, ytest, preds, 36)
+print("Brier Score for 3 years (Cox-EN):", coxscore3y)
+Support vector machine	#%% SVM
+X0=copy.deepcopy(X)
+Xtest0=copy.deepcopy(Xtest)
+X.columns=X.columns.map(strip_map)
+Xtest.columns=Xtest.columns.map(strip_map)
+X=X[non_zero_coefs.index.tolist()]
+Xtest=Xtest[non_zero_coefs.index.tolist()]
+print("coxcindex=",coxcindex)
+print("coxscore3m=",coxscore3m)
+print("coxscore1y=",coxscore1y)
+print("coxscore3y=",coxscore3y)
+X=copy.deepcopy(X)
+y=copy.deepcopy(y)
+%matplotlib inline
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas
+import seaborn as sns
+from sklearn.model_selection import ShuffleSplit, GridSearchCV
+from sksurv.datasets import load_veterans_lung_cancer
+from sksurv.column import encode_categorical
+from sksurv.metrics import concordance_index_censored
+from sksurv.svm import FastSurvivalSVM
+sns.set_style("whitegrid")
+
+#the amount of censoring for this data
+n_censored = y.shape[0] - y["status"].sum()
+print("%.1f%% of records are censored" % (n_censored / y.shape[0] * 100))
+plt.figure(figsize=(9, 6))
+val, bins, patches = plt.hist((y["dur_month"][y["status"]],
+                               y["dur_month"][~y["status"]]),
+                              bins=30, stacked=True)
+_ = plt.legend(patches, ["Time of Death", "Time of Censoring"])
+estimator = FastSurvivalSVM(max_iter=1000, tol=1e-5, random_state=1)
+# Adjust figure layout
+plt.tight_layout()
+
+# Save the figure as an image file
+plt.savefig("svm_amountcencoring.jpg", dpi=300, bbox_inches="tight")
+
+#a function for evaluating the performance of models during grid search
+X = X.astype(np.float64)
+def score_survival_model(model, X, y):
+    prediction = model.predict(X)
+    result = concordance_index_censored(y['status'], y['dur_month'], prediction)
+    return result[0]
+param_grid = {'alpha': 2. ** np.arange(-12, 13, 2)}
+cv = ShuffleSplit(n_splits=5, test_size=0.2, random_state=1)
+gcv = GridSearchCV(estimator, param_grid, scoring=score_survival_model,
+                   n_jobs=4, refit=False,
+                   cv=cv)
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+gcv = gcv.fit(X, y)
+round(gcv.best_score_, 3), gcv.best_params_
+def plot_performance(gcv):
+    n_splits = gcv.cv.n_splits
+    cv_scores = {"alpha": [], "test_score": [], "split": []}
+    order = []
+    for i, params in enumerate(gcv.cv_results_["params"]):
+        name = "%.5f" % params["alpha"]
+        order.append(name)
+        for j in range(n_splits):
+            vs = gcv.cv_results_["split%d_test_score" % j][i]
+            cv_scores["alpha"].append(name)
+            cv_scores["test_score"].append(vs)
+            cv_scores["split"].append(j)
+    df = pandas.DataFrame.from_dict(cv_scores)
+    _, ax = plt.subplots(figsize=(11, 6))
+    sns.boxplot(x="alpha", y="test_score", data=df, order=order, ax=ax)
+    _, xtext = plt.xticks()
+    for t in xtext:
+        t.set_rotation("vertical") 
+plot_performance(gcv)
+estimator.set_params(**gcv.best_params_)
+estimator.fit(X, y)
+estimator.predict(Xtest)
+svmcindex=estimator.score(Xtest,ytest)
+outroc(ytest,estimator.predict(Xtest),"svm")
+
+# Adjust figure layout
+plt.tight_layout()
+
+# Save the figure as an image file
+plt.savefig("svm_performance_gridsearch.jpg", dpi=300, bbox_inches="tight")
+
+# estimate performance on training data, thus use `va_y` twice.
+from sksurv.metrics import (concordance_index_censored,
+                            concordance_index_ipcw,
+                            cumulative_dynamic_auc)
+va_auc, va_mean_auc = cumulative_dynamic_auc(y, ytest, cph.predict(Xtest0), va_times)
+va_auc2, va_mean_auc2 = cumulative_dynamic_auc(y, ytest, estimator.predict(Xtest), va_times)
+plt.figure()
+plt.plot(va_times, va_auc, marker="o")
+
+plt.axhline(va_mean_auc, linestyle="--")
+plt.plot(va_times, va_auc2, marker="o")
+plt.axhline(va_mean_auc2, linestyle="--")
+plt.xlabel("months from enrollment")
+plt.ylabel("time-dependent AUC")
+plt.grid(True)
+
+# Adjust figure layout
+plt.tight_layout()
+
+# Save the figure as an image file
+plt.savefig("svm_performance.jpg", dpi=300, bbox_inches="tight")
+Random survival forest	#%% RSF
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+%matplotlib inline
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OrdinalEncoder
+from sksurv.datasets import load_gbsg2
+from sksurv.preprocessing import OneHotEncoder
+from sksurv.ensemble import RandomSurvivalForest
+from sklearn.model_selection import RandomizedSearchCV
+
+#Search for best hyper-parameter
+random_state = 1
+n_estimators = [int(x) for x in np.linspace(200, 1000, 5)]
+max_depth = [int(x) for x in np.linspace(5, 55, 11)]
+max_features = ['auto', 'sqrt', 'log2']
+min_samples_split = [int(x) for x in np.linspace(2, 10, 5)]
+min_samples_leaf = [int(x) for x in np.linspace(2, 10, 5)]
+rf=RandomSurvivalForest()
+random_grid = {'n_estimators': n_estimators,
+               'max_features': max_features,
+               'max_depth': max_depth,
+               'min_samples_split': min_samples_split,
+               'min_samples_leaf': min_samples_leaf}
+grid_search = RandomizedSearchCV(estimator=rf, 
+                                  n_iter=50,
+                               param_distributions=random_grid,
+                               random_state=1
+                               , n_jobs=4
+                               )
+import time
+t0=time.time()
+print('the start time of the program:',time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time())))
+grid_search.fit(X, y)
+t1=time.time()
+print('the end time of the program:',time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time())))
+print("total time：%.6fs"%(t1-t0))
+rsf=RandomSurvivalForest(random_state=1)
+rsf.set_params(**grid_search.best_params_)
+est=rsf.fit(X, y)
+
+#get the predictive performance of RSF
+surv = rsf.predict_survival_function(Xtest, return_array=True)
+surv2 = rsf.predict_cumulative_hazard_function(Xtest, return_array=True)
+rsf.predict(Xtest)
+est=rsf.fit(X, y)
+surv = est.predict_survival_function(Xtest, return_array=False)
+preds = [fn(3) for fn in surv]
+times, rsfscore3m = brier_score(y, ytest, preds, 3)
+preds = [fn(12) for fn in surv]
+times, rsfscore1y = brier_score(y, ytest, preds, 12)
+preds = [fn(36) for fn in surv]
+times, rsfscore3y = brier_score(y, ytest, preds, 36)
+outroc(ytest,rsf.predict(Xtest),"rsf")
+rsfcindex=rsf.score(Xtest, ytest)
+
+# estimate performance on training data, thus use `va_y` twice.
+from sksurv.metrics import (concordance_index_censored,
+                            concordance_index_ipcw,
+                            cumulative_dynamic_auc)
+va_auc, va_mean_auc = cumulative_dynamic_auc(y, ytest, cph.predict(Xtest0), va_times)
+va_auc2, va_mean_auc2 = cumulative_dynamic_auc(y, ytest, estimator.predict(Xtest[non_zero_coefs.index.tolist()]), va_times)
+va_auc3, va_mean_auc3 = cumulative_dynamic_auc(y, ytest, rsf.predict(Xtest), va_times)
+plt.figure()
+plt.plot(va_times, va_auc0, marker="o",markersize=3.,label ='cox')
+plt.axhline(va_mean_auc, linestyle="--")
+plt.plot(va_times, va_auc, marker="o",markersize=3.,label ='cox-en')
+plt.axhline(va_mean_auc, linestyle="--")
+plt.plot(va_times, va_auc2, marker="o",markersize=3.,label ='svm')
+plt.axhline(va_mean_auc2, linestyle="--")
+plt.plot(va_times, va_auc3, marker="o",markersize=3.,label='rsf')
+plt.axhline(va_mean_auc3, linestyle="--")
+plt.xlabel("months from enrollment")
+plt.ylabel("time-dependent AUC")
+
+plt.rcParams['savefig.dpi'] = 300 
+plt.rcParams['figure.dpi'] = 300 
+plt.xlim(0,60)
+plt.ylim(0.5,1)
+plt.legend()
+plt.grid(True)
+
+# Adjust figure layout
+plt.tight_layout()
+
+# Save the figure as an image file
+plt.savefig("rsf_tdAUC.jpg", dpi=300, bbox_inches="tight")
+
+#get the color
+plt.rcParams['axes.prop_cycle'].by_key()['color']
+print("rsfcindex=",rsfcindex)
+print("rsfscore3m=",rsfscore3m)
+print("rsfscore1y=",rsfscore1y)
+print("rsfscore3y=",rsfscore3y)
+
+#%% feature importance evaluated by RSF
+import eli5
+from eli5.sklearn import PermutationImportance
+    
+perm = PermutationImportance(rsf, n_iter=5, random_state=random_state)
+perm.fit(X, y)
+print("1")
+feature_names = X.columns.tolist()
+html_obj = eli5.show_weights(perm,feature_names=feature_names)
+with open('iris-importance2.htm','wb') as f:
+    f.write(html_obj.data.encode("UTF-8"))
+
+# Open the stored HTML file on the default browser
+import webbrowser
+url = r'iris-importance2.htm'
+webbrowser.open(url, new=2)
+
+#rsfimportance.xlsx was obtained from iris-importance2.htm
+rsfimp=pd.read_excel(r'rsfimportance.xlsx')
+rsfimp.set_index(["Feature"], inplace=True)
+rsfimp = rsfimp.apply(pd.to_numeric, errors='coerce')
+_, ax = plt.subplots(figsize=(6, 8))
+rsfimp.plot.barh(ax=ax, legend=False)
+ax.set_xlabel("weight")
+ax.set_ylabel("")
+ax.grid(True)
+
+# Adjust figure layout
+plt.tight_layout()
+
+# Save the figure as an image file
+plt.savefig("rsf_importance.jpg", dpi=300, bbox_inches="tight")
+Kaplan Meier Curve for each model to differentiate high and low risk group	#%% KM curves
+import pandas as pd
+import numpy as np
+import csv
+import matplotlib.pyplot as plt
+coxkm = pd.read_csv(r'coxforkm.csv')
+cox2km = pd.read_csv(r'cox2forkm.csv')
+svmkm = pd.read_csv(r'svmforkm.csv')
+rsfkm = pd.read_csv(r'rsfforkm.csv')
+from lifelines import KaplanMeierFitter
+from lifelines.utils import median_survival_times
+
+# KM curves for the high and low risk group of cox-en
+E=coxkm[coxkm['subtype']=="low"]['os']
+T=coxkm[coxkm['subtype']=="low"]['time']
+Etest=coxkm[coxkm['subtype']=="high"]['os']
+Ttest=coxkm[coxkm['subtype']=="high"]['time']
+fig = plt.figure(figsize=(8, 6))
+ax = plt.subplot(111)
+ax.set_xlim(-1,)
+
+kmf_control = KaplanMeierFitter()
+ax = kmf_control.fit(T, event_observed=E, label="Low risk").plot_survival_function(ax=ax,xticks=np.linspace(0,60,7,endpoint=True))
+kmf_exp = KaplanMeierFitter()
+ax = kmf_exp.fit(Ttest, event_observed=Etest, label="High risk").plot_survival_function(ax=ax,xticks=np.linspace(0,60,7,endpoint=True))
+
+# Set the title of the figure
+plt.title("B) Cox-EN Survival Curves")
+from lifelines.statistics import logrank_test
+results = logrank_test(T, Ttest, E, Etest, alpha=.99)
+p='%.3f' % results.p_value
+from lifelines.plotting import add_at_risk_counts
+plt.rcParams['savefig.dpi'] = 600 
+plt.rcParams['figure.dpi'] = 300
+ax.set_xlabel('Survival time(months)',fontsize=12)
+plt.text(45, 0.05, "Logrank Test: P<.001", size = 12)
+plt.ylim(0,1) 
+plt.xticks(fontsize=12)
+plt.yticks(fontsize=12)
+plt.legend(fontsize=12)
+plt.tight_layout()
+fig.savefig(r"coxkm.jpg")
+
+# KM curves for the high and low risk group of cox
+E=cox2km[cox2km['subtype']=="low"]['os']
+T=cox2km[cox2km['subtype']=="low"]['time']
+Etest=cox2km[cox2km['subtype']=="high"]['os']
+Ttest=cox2km[cox2km['subtype']=="high"]['time']
+fig = plt.figure(figsize=(8, 6))
+ax = plt.subplot(111)
+ax.set_xlim(-1,)
+kmf_control = KaplanMeierFitter()
+ax = kmf_control.fit(T, event_observed=E, label="Low risk").plot_survival_function(ax=ax,xticks=np.linspace(0,60,7,endpoint=True))
+kmf_exp = KaplanMeierFitter()
+ax = kmf_exp.fit(Ttest, event_observed=Etest, label="High risk").plot_survival_function(ax=ax,xticks=np.linspace(0,60,7,endpoint=True))
+
+# Set the title of the figure
+plt.title("A) Cox Survival Curves")
+from lifelines.statistics import logrank_test
+results = logrank_test(T, Ttest, E, Etest, alpha=.99)
+p='%.3f' % results.p_value
+from lifelines.plotting import add_at_risk_counts
+plt.rcParams['savefig.dpi'] = 600 
+plt.rcParams['figure.dpi'] = 300 
+ax.set_xlabel('Survival time(months)',fontsize=12)
+plt.text(45, 0.05, "Logrank Test: P<.001", size = 12)
+plt.ylim(0,1) 
+plt.xticks(fontsize=12)
+plt.yticks(fontsize=12)
+plt.legend(fontsize=12)
+plt.tight_layout()
+fig.savefig(r"cox2km.jpg")
+
+# KM curves for the high and low risk group of svm
+E=svmkm[svmkm['subtype']=="low"]['os']
+T=svmkm[svmkm['subtype']=="low"]['time']
+Etest=svmkm[svmkm['subtype']=="high"]['os']
+Ttest=svmkm[svmkm['subtype']=="high"]['time']
+fig = plt.figure(figsize=(8, 6))
+ax = plt.subplot(111)
+ax.set_xlim(-1,)
+kmf_control = KaplanMeierFitter()
+ax = kmf_control.fit(T, event_observed=E, label="Low risk").plot_survival_function(ax=ax,xticks=np.linspace(0,60,7,endpoint=True))
+kmf_exp = KaplanMeierFitter()
+ax = kmf_exp.fit(Ttest, event_observed=Etest, label="High risk").plot_survival_function(ax=ax,xticks=np.linspace(0,60,7,endpoint=True))
+
+# Set the title of the figure
+plt.title("C) SVM Survival Curves")
+from lifelines.statistics import logrank_test
+results = logrank_test(T, Ttest, E, Etest, alpha=.99)
+p='%.3f' % results.p_value
+from lifelines.plotting import add_at_risk_counts
+plt.rcParams['savefig.dpi'] = 600 
+plt.rcParams['figure.dpi'] = 300 
+ax.set_xlabel('Survival time(months)',fontsize=12)
+plt.text(45, 0.05, "Logrank Test: P<.001", size = 12)
+plt.ylim(0,1) 
+plt.xticks(fontsize=12)
+plt.yticks(fontsize=12)
+plt.legend(fontsize=12)
+plt.tight_layout()
+fig.savefig(r"svmkm.jpg")
+
+# KM curves for the high and low risk group of rsf
+E=rsfkm[rsfkm['subtype']=="low"]['os']
+T=rsfkm[rsfkm['subtype']=="low"]['time']
+Etest=rsfkm[rsfkm['subtype']=="high"]['os']
+Ttest=rsfkm[rsfkm['subtype']=="high"]['time']
+fig = plt.figure(figsize=(8, 6))
+ax = plt.subplot(111)
+ax.set_xlim(-1,)
+kmf_control = KaplanMeierFitter()
+ax = kmf_control.fit(T, event_observed=E, label="Low risk").plot_survival_function(ax=ax,xticks=np.linspace(0,60,7,endpoint=True))
+kmf_exp = KaplanMeierFitter()
+ax = kmf_exp.fit(Ttest, event_observed=Etest, label="High risk").plot_survival_function(ax=ax,xticks=np.linspace(0,60,7,endpoint=True))
+
+# Set the title of the figure
+plt.title("D) RSF Survival Curves")
+from lifelines.statistics import logrank_test
+results = logrank_test(T, Ttest, E, Etest, alpha=.99)
+p='%.3f' % results.p_value
+from lifelines.plotting import add_at_risk_counts
+plt.rcParams['savefig.dpi'] = 600 
+plt.rcParams['figure.dpi'] = 300 
+ax.set_xlabel('Survival time(months)',fontsize=12)
+plt.text(45, 0.05, "Logrank Test: P<.001", size = 15)
+plt.ylim(0,1) 
+plt.xticks(fontsize=12)
+plt.yticks(fontsize=12)
+plt.legend(fontsize=12)
+plt.tight_layout()
+fig.savefig(r"rsfkm.jpg")
+
+# KM curves for training and test set
+from lifelines import KaplanMeierFitter
+from lifelines.utils import median_survival_times
+E=y['status']
+T=y['dur_month']
+Etest=ytest['status']
+Ttest=ytest['dur_month']
+fig = plt.figure(figsize=(8, 6))
+ax = plt.subplot(111)
+ax.set_xlim(-1,)
+kmf_control = KaplanMeierFitter()
+ax = kmf_control.fit(T, event_observed=E, label="Training").plot_survival_function(ax=ax,xticks=np.linspace(0,60,7,endpoint=True))
+
+kmf_exp = KaplanMeierFitter()
+ax = kmf_exp.fit(Ttest, event_observed=Etest, label="Test").plot_survival_function(ax=ax,xticks=np.linspace(0,60,7,endpoint=True))
+
+# Set the title of the figure
+plt.title("Training and test Survival Curves")
+from lifelines.statistics import logrank_test
+results = logrank_test(T, Ttest, E, Etest, alpha=.99)
+p='%.2f' % results.p_value
+from lifelines.plotting import add_at_risk_counts
+
+add_at_risk_counts(kmf_control,kmf_exp, ax=ax,xticks=np.linspace(0,60,7,endpoint=True))
+plt.rcParams['savefig.dpi'] = 600 
+plt.rcParams['figure.dpi'] = 300 
+ax.set_xlabel('Survival time(months)')
+plt.text(45, 0.1, "Logrank Test: P="+p, size = 12)
+plt.ylim(0,1) 
+plt.tight_layout()
+fig.savefig(r"train and test.jpg")
+C-index and ROC curve in R Software	#calculate and compare C-index
+library(Hmisc)
+library("survcomp")
+library("survival")
+library("prodlim")
+cox <- read.csv("rocdatacox.csv")
+cox2 <- read.csv("rocdatacox2.csv")
+svm <- read.csv("rocdatasvm.csv")
+rsf <- read.csv("rocdatarsf.csv")
+
+options(digits=3)
+#cox-en
+ccox<- concordance.index(x=-cox$marker, surv.time=svm$time, surv.event=svm$os,method="noether")
+ccox$c.index
+ccox$lower
+ccox$upper
+#cox
+ccox2 <- concordance.index(x=cox2$marker, surv.time=svm$time, surv.event=svm$os,method="noether")
+ccox2$c.index
+ccox2$lower
+ccox2$upper
+#svm
+csvm<- concordance.index(x=svm$marker, surv.time=svm$time, surv.event=svm$os,method="noether")
+csvm$c.index
+csvm$lower
+csvm$upper
+#rsf
+crsf<- concordance.index(x=rsf$marker, surv.time=svm$time, surv.event=svm$os,method="noether")
+crsf$c.index
+crsf$lower
+crsf$upper
+
+cindex.comp(crsf, ccox)
+cindex.comp(crsf, ccox2)
+cindex.comp(crsf, csvm)
+cindex.comp(ccox, ccox2)
+cindex.comp(ccox, csvm)
+cindex.comp(ccox2, csvm)
+
+#time-dependent ROC curves
+library(survivalROC)
+library(survcomp)
+#library(readxl)
+#cox is EN cox2 is traditional
+cox <- read.csv("rocdatacox.csv")
+coxr3=  survivalROC(Stime= cox$time, status=cox$os, marker=-cox$marker,  predict.time=3,method = "KM")
+coxr12=  survivalROC(Stime= cox$time, status=cox$os, marker=-cox$marker,  predict.time=12,method = "KM")
+coxr36=  survivalROC(Stime= cox$time, status=cox$os, marker=-cox$marker,  predict.time=36,method = "KM")
+
+cox2 <- read.csv("rocdatacox2.csv")
+cox2r3=  survivalROC(Stime= cox2$time, status=cox2$os, marker=cox2$marker,  predict.time=3,method = "KM")
+cox2r12=  survivalROC(Stime= cox2$time, status=cox2$os, marker=cox2$marker,  predict.time=12,method = "KM")
+cox2r36=  survivalROC(Stime= cox2$time, status=cox2$os, marker=cox2$marker,  predict.time=36,method = "KM")
+
+svm <- read.csv("rocdatasvm.csv")
+svmr3=  survivalROC(Stime= svm$time, status=svm$os, marker=svm$marker,  predict.time=3,method = "KM")
+svmr12=  survivalROC(Stime= svm$time, status=svm$os, marker=svm$marker,  predict.time=12,method = "KM")
+svmr36=  survivalROC(Stime= svm$time, status=svm$os, marker=svm$marker,  predict.time=36,method = "KM")
+
+rsf <- read.csv("rocdatarsf.csv")
+rsfr3=  survivalROC(Stime= rsf$time, status=rsf$os, marker=rsf$marker,  predict.time=3,method = "KM")
+rsfr12=  survivalROC(Stime= rsf$time, status=rsf$os, marker=rsf$marker,  predict.time=12,method = "KM")
+rsfr36=  survivalROC(Stime= rsf$time, status=rsf$os, marker=rsf$marker,  predict.time=36,method = "KM")
+
+
+#calculate for D-index
+a <- D.index(x=-cox$marker, surv.time=cox$time, surv.event=cox$os,method.test = c("logrank"))
+b <- D.index(x=cox2$marker, surv.time=cox2$time, surv.event=cox2$os,method.test = c("logrank"))
+c <- D.index(x=svm$marker, surv.time=svm$time, surv.event=svm$os,method.test = c("logrank"))
+d <- D.index(x=rsf$marker, surv.time=rsf$time, surv.event=rsf$os,method.test = c("logrank"))
+
+cox$subtype <- cut(-cox$marker,breaks =c(min(-cox$marker),median(-cox$marker),max(-cox$marker)),labels = c("low","high"))
+cox2$subtype <- cut(cox2$marker,breaks =c(min(cox2$marker),median(cox2$marker),max(cox2$marker)),labels = c("low","high"))
+svm$subtype <- cut(svm$marker,breaks =c(min(svm$marker),median(svm$marker),max(svm$marker)),labels = c("low","high"))
+rsf$subtype <- cut(rsf$marker,breaks =c(min(rsf$marker),median(rsf$marker),max(rsf$marker)),labels = c("low","high"))
+
+#output data to generate KM curves in python
+write.csv(cox,"coxforkm.csv")
+write.csv(cox2,"cox2forkm.csv")
+write.csv(svm,"svmforkm.csv")
+write.csv(rsf,"rsfforkm.csv")
+
+#3 month
+coxr=coxr3
+cox2r=cox2r3
+svmr=svmr3
+rsfr=rsfr3
+coxr3$AUC
+cox2r3$AUC
+svmr3$AUC
+rsfr3$AUC
+path= "ROC3.jpg"
+tit="At 3 Months"
+png(file = path,width=600*3,height=3*600,res=72*3)
+#par(pin = c(2.5,2.5))
+plot(cox2r$FP, cox2r$TP, 
+     xlab=(""), ylab="",
+     type="l",col="#1f77b4",xlim=c(0,1), ylim=c(0,1), lwd=1.8,font.axis=1,
+     cex.axis=1,cex.main=1.5,
+     main=tit)
+par(new=TRUE)
+plot(coxr$FP, coxr$TP, xlab=(""), ylab="", lwd=1.8,cex.axis=1,cex.main=1,font.axis=1,
+     type="l",col="#ff7f0e",xlim=c(0,1), ylim=c(0,1))
+par(new=TRUE)  
+plot(svmr$FP, svmr$TP, xlab=(""), ylab="",lwd=1.8,cex.axis=1,cex.main=1,font.axis=1,
+     type="l",col="#2ca02c",xlim=c(0,1), ylim=c(0,1))
+par(new=TRUE)  
+plot(rsfr$FP, rsfr$TP, xlab=(""), ylab="",lwd=1.8,cex.axis=1,cex.main=1,font.axis=1,
+     type="l",col="#d62728",xlim=c(0,1), ylim=c(0,1))
+abline(0,1,col="gray",lty=2)
+#par(pin = c(3,3))
+legend("bottomright",c("Cox","Cox-EN","SVM","RSF"),col=c("#1f77b4","#ff7f0e","#2ca02c","#d62728"),lty=1,lwd=1.8,cex=1.5)
+dev.off()
+
+#1 year
+coxr=coxr12
+cox2r=cox2r12
+svmr=svmr12
+rsfr=rsfr12
+coxr12$AUC
+cox2r12$AUC
+svmr12$AUC
+rsfr12$AUC
+path= "ROC1y.jpg"
+tit="At 1 Year"
+
+png(file = path,width=600*3,height=3*600,res=72*3)
+#par(pin = c(2.5,2.5))
+plot(cox2r$FP, cox2r$TP, 
+     xlab=(""), ylab="",
+     type="l",col="#1f77b4",xlim=c(0,1), ylim=c(0,1), lwd=1.8,font.axis=1,
+     cex.axis=1,cex.main=1.5,
+     main=tit)
+par(new=TRUE)
+plot(coxr$FP, coxr$TP, xlab=(""), ylab="", lwd=1.8,cex.axis=1,cex.main=1,font.axis=1,
+     type="l",col="#ff7f0e",xlim=c(0,1), ylim=c(0,1))
+par(new=TRUE)  
+plot(svmr$FP, svmr$TP, xlab=(""), ylab="",lwd=1.8,cex.axis=1,cex.main=1,font.axis=1,
+     type="l",col="#2ca02c",xlim=c(0,1), ylim=c(0,1))
+par(new=TRUE)  
+plot(rsfr$FP, rsfr$TP, xlab=(""), ylab="",lwd=1.8,cex.axis=1,cex.main=1,font.axis=1,
+     type="l",col="#d62728",xlim=c(0,1), ylim=c(0,1))
+abline(0,1,col="gray",lty=2)
+#par(pin = c(3,3))
+legend("bottomright",c("Cox","Cox-EN","SVM","RSF"),col=c("#1f77b4","#ff7f0e","#2ca02c","#d62728"),lty=1,lwd=1.8,cex=1.5)
+dev.off()
+
+#3 years
+coxr=coxr36
+cox2r=cox2r36
+svmr=svmr36
+rsfr=rsfr36
+coxr36$AUC
+cox2r36$AUC
+svmr36$AUC
+rsfr36$AUC
+path= "ROC3y.jpg"
+tit="At 3 Years"
+
+png(file = path,width=600*3,height=3*600,res=72*3)
+#par(pin = c(2.5,2.5))
+plot(cox2r$FP, cox2r$TP, 
+     xlab=(""), ylab="",
+     type="l",col="#1f77b4",xlim=c(0,1), ylim=c(0,1), lwd=1.8,font.axis=1,
+     cex.axis=1,cex.main=1.5,
+     main=tit)
+par(new=TRUE)
+plot(coxr$FP, coxr$TP, xlab=(""), ylab="", lwd=1.8,cex.axis=1,cex.main=1,font.axis=1,
+     type="l",col="#ff7f0e",xlim=c(0,1), ylim=c(0,1))
+par(new=TRUE)  
+plot(svmr$FP, svmr$TP, xlab=(""), ylab="",lwd=1.8,cex.axis=1,cex.main=1,font.axis=1,
+     type="l",col="#2ca02c",xlim=c(0,1), ylim=c(0,1))
+par(new=TRUE)  
+plot(rsfr$FP, rsfr$TP, xlab=(""), ylab="",lwd=1.8,cex.axis=1,cex.main=1,font.axis=1,
+     type="l",col="#d62728",xlim=c(0,1), ylim=c(0,1))
+abline(0,1,col="gray",lty=2)
+#par(pin = c(3,3))
+legend("bottomright",c("Cox","Cox-EN","SVM","RSF"),col=c("#1f77b4","#ff7f0e","#2ca02c","#d62728"),lty=1,lwd=1.8,cex=1.5)
+dev.off()
